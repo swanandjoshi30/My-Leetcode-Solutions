@@ -1,0 +1,89 @@
+import os
+from git import Repo, GitCommandError
+from transformers import pipeline
+
+# ---------------- CONFIG ----------------
+GITHUB_REPO_LOCAL_PATH = r'D:\PROJECTS\auto git\My-Leetcode-Solutions'
+WATCH_FOLDER = r'D:\PROJECTS\auto git\auto_leetcode_solution'
+UPLOADED_TRACK_FILE = os.path.join(GITHUB_REPO_LOCAL_PATH, 'uploaded_files.txt')
+MAX_FILE_CHARS = 1000
+# ---------------------------------------
+
+# Initialize summarizer (small model)
+summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")
+
+# Ensure uploaded files tracker exists
+if not os.path.exists(UPLOADED_TRACK_FILE):
+    with open(UPLOADED_TRACK_FILE, 'w', encoding='utf-8') as f:
+        pass
+
+# Load list of already uploaded files
+with open(UPLOADED_TRACK_FILE, 'r', encoding='utf-8') as f:
+    uploaded_files = set(f.read().splitlines())
+
+# Initialize Git repo
+repo = Repo(GITHUB_REPO_LOCAL_PATH)
+origin = repo.remote(name='origin')
+
+
+def generate_description(file_path):
+    """Generate a meaningful 2-line description."""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            content = f.read(MAX_FILE_CHARS)
+        summary = summarizer(content, max_length=60, min_length=20, do_sample=False)
+        return summary[0]['summary_text']
+    except Exception as e:
+        print(f"Error generating description for {file_path}: {e}")
+        return "Automated file upload"
+
+
+def upload_file(file_path):
+    """Add file to repo, commit, and push."""
+    file_name = os.path.basename(file_path)
+    if file_name in uploaded_files:
+        print(f"Skipping {file_name}, already uploaded.")
+        return
+
+    # Generate summary
+    description = generate_description(file_path)
+
+    # Move file to repo
+    dest_path = os.path.join(GITHUB_REPO_LOCAL_PATH, file_name)
+    os.replace(file_path, dest_path)
+
+    # Add and commit
+    repo.git.add(dest_path)
+    repo.index.commit(f"Add {file_name}: {description}")
+
+    # Auto-stash if dirty BEFORE pulling
+    if repo.is_dirty():
+        print("Repo has uncommitted changes. Stashing them before pulling...")
+        repo.git.add('--all')
+        repo.git.stash('save')
+
+    # Pull latest changes
+    try:
+        origin.pull(rebase=True)
+    except GitCommandError as e:
+        print(f"Git pull warning: {e}")
+
+    # Push to remote
+    try:
+        origin.push()
+        print(f"{file_name} uploaded successfully!")
+    except GitCommandError as e:
+        print(f"Git push error for {file_name}: {e}")
+
+    # Track file
+    with open(UPLOADED_TRACK_FILE, 'a', encoding='utf-8') as f:
+        f.write(file_name + '\n')
+
+
+# Main
+for file in os.listdir(WATCH_FOLDER):
+    file_path = os.path.join(WATCH_FOLDER, file)
+    if os.path.isfile(file_path):
+        upload_file(file_path)
+
+print("Daily GitHub automation run complete!")
